@@ -12,7 +12,7 @@ Termux（从 F-Droid 下载，不要用 Google Play 版）
 快速开始
 
 # 1. 下载脚本
-git clone https://github.com/你的用户名/MaiBot-Termux-Deploy.git
+git clone https://github.com/2532316972/MaiBot-Termux-Deploy.git
 cd MaiBot-Termux-Deploy
 
 
