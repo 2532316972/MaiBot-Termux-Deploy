@@ -2,6 +2,7 @@
 # ============================================
 # MaiBot + NapCat 全自动部署脚本 (Termux/Android)
 # 适配架构: aarch64 (ARM64)
+# 基于官方 NapCat Termux 安装方式修正
 # ============================================
 
 set -e
@@ -11,6 +12,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -26,41 +28,48 @@ phase1_termux() {
     step "更新 Termux 包"
     pkg update -y && pkg upgrade -y
 
-    step "安装必要工具"
-    pkg install proot-distro git screen -y
+    step "安装必要工具 (proot-distro, screen)"
+    pkg install proot-distro screen -y
 }
 
 # ============================================
-# 阶段 2: 安装 NapCat (内嵌逻辑，不依赖外部交互式脚本)
+# 阶段 2: 安装 NapCat (官方 Termux 方式)
 # ============================================
 phase2_napcat() {
     step "安装 NapCat (Debian 容器)"
 
-    # 安装 debian 容器作为 napcat 运行环境
+    # 安装 debian 容器并重命名为 napcat
     proot-distro install debian --override-alias napcat
 
     step "初始化 NapCat 容器 (安装 QQ + NapCat)"
     info "这一步会下载 NapCat Linux 安装脚本，耗时约 3-5 分钟"
 
-    proot-distro sh napcat -- bash -c '
-DEBIAN_FRONTEND=noninteractive
-apt update -y && apt install -y sudo curl libgcrypt20
-curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh
-# --docker n --cli n 跳过 Docker 和 CLI 交互提示
-sudo bash napcat.sh --docker n --cli n
-apt autoremove -y && apt clean
-rm -rf /tmp/* /var/lib/apt/lists/* /root/napcat.sh
-'
+    local init_cmd="apt update -y && \
+apt install -y sudo curl libgcrypt20 && \
+curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh && \
+sudo bash napcat.sh --docker n --cli n && \
+apt autoremove -y && \
+apt clean && \
+rm -rf /tmp/* /var/lib/apt/lists /root/napcat.sh"
 
+    proot-distro sh napcat -- bash -c "$init_cmd"
     if [ $? -ne 0 ]; then
         proot-distro remove napcat
         error "NapCat 容器初始化失败"
     fi
 
     info "NapCat 安装完成"
-    info "启动 NapCat: proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\""
-    info "后台启动: screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"'"
-    info "进入后台: screen -r napcat (Ctrl+A+D 离开)"
+    echo ""
+    echo -e "${GREEN}启动 NapCat (前台):${NC}"
+    echo -e "  proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\""
+    echo -e "${GREEN}后台启动 NapCat:${NC}"
+    echo -e "  screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"'"
+    echo -e "${GREEN}后台快速登录 (指定 QQ 号):${NC}"
+    echo -e "  screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q 你的QQ号\"'"
+    echo -e "${GREEN}进入容器内部:${NC} proot-distro login napcat"
+    echo -e "${MAGENTA}Napcat 真实路径(容器外): /data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/napcat/root/Napcat${NC}"
+    echo -e "${MAGENTA}WebUI 密钥文件: 安装位置/config/webui.json${NC}"
+    echo ""
 }
 
 # ============================================
@@ -112,7 +121,6 @@ echo "=== INSTALL DONE ==="
 phase4_config() {
     step "首次启动 MaiBot 生成配置文件 (自动确认 EULA)"
 
-    # 自动输入"同意"确认 EULA，超时 120 秒自动退出
     proot-distro login ubuntu -- bash -c '
 source ~/miniforge3/bin/activate maibot
 cd ~/MaiBot
@@ -127,62 +135,21 @@ fi
     step "修改 WebUI 监听地址为 0.0.0.0 (局域网可访问)"
     proot-distro login ubuntu -- bash -c '
 CONFIG=~/MaiBot/config/bot_config.toml
-sed -i "/^\[webui\]/,/^\[/{s/host = \"127.0.0.1\"/host = \"0.0.0.0\"/}" "$CONFIG"
-
-if grep -q "host = \"0.0.0.0\"" "$CONFIG"; then
-    echo "=== CONFIG OK: WebUI 局域网访问已开启 ==="
+# 如果 [webui] 段存在则修改 host，否则追加
+if grep -q "^\[webui\]" "$CONFIG"; then
+    sed -i "/^\[webui\]/,/^\[/{s/host = \"127.0.0.1\"/host = \"0.0.0.0\"/}" "$CONFIG"
 else
-    echo "WARN: 未能自动修改 host，请手动编辑 config/bot_config.toml"
+    cat >> "$CONFIG" <<EOF
+
+[webui]
+enabled = true
+host = "0.0.0.0"
+port = 8001
+EOF
 fi
 '
 
     info "配置完成"
-}
-
-# ============================================
-# 一键全自动部署
-# ============================================
-cmd_auto() {
-    echo -e "${CYAN}${BOLD}"
-    echo "╔══════════════════════════════════════════════╗"
-    echo "║   MaiBot + NapCat 全自动部署                 ║"
-    echo "║   目标: Termux / Android (aarch64)           ║"
-    echo "╚══════════════════════════════════════════════╝"
-    echo -e "${NC}"
-
-    warn "整个流程约需 30-60 分钟，请保持 Termux 在前台"
-    echo ""
-    read -p "按回车开始部署，Ctrl+C 取消..." _
-
-    phase1_termux
-    phase2_napcat
-    phase3_maibot
-    phase4_config
-
-    # 获取局域网 IP
-    IP=$(ip addr show wlan0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
-
-    echo ""
-    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════╗"
-    echo "║            🎉 部署完成！                     ║"
-    echo "╠══════════════════════════════════════════════╣"
-    echo "║  启动 MaiBot:   bash deploy.sh start         ║"
-    echo "║  启动 NapCat:   bash deploy.sh napcat        ║"
-    echo "║  后台 NapCat:   bash deploy.sh napcat-bg     ║"
-    echo "╠══════════════════════════════════════════════╣${NC}"
-    if [ -n "$IP" ]; then
-        echo -e "${GREEN}${BOLD}║  MaiBot WebUI:  http://${IP}:8001${NC}"
-        echo -e "${GREEN}${BOLD}║  NapCat WebUI:  http://${IP}:6099${NC}"
-    else
-        echo -e "${GREEN}${BOLD}║  MaiBot WebUI:  http://手机IP:8001            ║"
-        echo -e "${GREEN}${BOLD}║  NapCat WebUI:  http://手机IP:6099            ║"
-    fi
-    echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════════╣"
-    echo "║  下一步:                                     ║"
-    echo "║  1. bash deploy.sh start  配置 API Key      ║"
-    echo "║  2. bash deploy.sh napcat 扫码登录 QQ       ║"
-    echo "║  3. 在 WebUI 插件市场装 NapCat 适配器        ║"
-    echo "╚══════════════════════════════════════════════╝${NC}"
 }
 
 # ============================================
@@ -194,7 +161,7 @@ cmd_start() {
 }
 
 cmd_napcat() {
-    info "启动 NapCat (Ctrl+C 停止)..."
+    info "启动 NapCat (前台, Ctrl+C 停止)..."
     proot-distro sh napcat -- bash -c "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox"
 }
 
@@ -202,6 +169,20 @@ cmd_napcat_bg() {
     info "后台启动 NapCat (screen -r napcat 查看, Ctrl+A+D 离开)..."
     screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox"'
     info "NapCat 已在后台运行"
+}
+
+cmd_napcat_bg_qq() {
+    if [ -z "$1" ]; then
+        error "请提供 QQ 号，用法: bash deploy.sh napcat-bg-qq 123456789"
+    fi
+    info "后台启动 NapCat 并快速登录 QQ $1 ..."
+    screen -dmS napcat bash -c "proot-distro sh napcat -- bash -c 'xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q $1'"
+    info "NapCat 已在后台运行，请用 screen -r napcat 查看二维码或确认登录"
+}
+
+cmd_napcat_login() {
+    info "进入 NapCat 容器内部 (可手动操作)..."
+    proot-distro login napcat
 }
 
 cmd_clean() {
@@ -214,7 +195,7 @@ cmd_clean() {
     step "清除环境..."
     proot-distro remove ubuntu 2>/dev/null || true
     proot-distro remove napcat 2>/dev/null || true
-    rm -rf $HOME/Miniforge.sh $HOME/miniforge3 $HOME/MaiBot $HOME/MaiBot-Napcat-Adapter $HOME/.conda
+    rm -rf $HOME/miniforge3 $HOME/MaiBot $HOME/MaiBot-Napcat-Adapter $HOME/.conda
     info "环境已清除"
 }
 
@@ -255,11 +236,15 @@ cmd_status() {
         echo -e "  Ubuntu 容器:  ${RED}未安装${NC}"
     fi
 
-    IP=$(ip addr show wlan0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+    # 获取手机局域网 IP（更通用的方法）
+    IP=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
     if [ -n "$IP" ]; then
         echo ""
         echo -e "  手机 IP:  ${GREEN}$IP${NC}"
-        echo -e "  WebUI:    ${GREEN}http://$IP:8001${NC}"
+        echo -e "  MaiBot WebUI:  ${GREEN}http://$IP:8001${NC}"
+    else
+        echo ""
+        warn "未能自动获取 IP，请手动输入 ifconfig 查看"
     fi
     echo ""
 }
@@ -276,26 +261,76 @@ echo "=== UPDATE DONE ==="
 '
 }
 
+cmd_auto() {
+    echo -e "${CYAN}${BOLD}"
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║   MaiBot + NapCat 全自动部署                 ║"
+    echo "║   目标: Termux / Android (aarch64)           ║"
+    echo "║   基于官方 NapCat Termux 安装方式            ║"
+    echo "╚══════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    warn "整个流程约需 30-60 分钟，请保持 Termux 在前台"
+    echo ""
+    read -p "按回车开始部署，Ctrl+C 取消..." _
+
+    phase1_termux
+    phase2_napcat
+    phase3_maibot
+    phase4_config
+
+    IP=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+
+    echo ""
+    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════╗"
+    echo "║            🎉 部署完成！                     ║"
+    echo "╠══════════════════════════════════════════════╣"
+    echo "║  启动 MaiBot:   bash deploy.sh start         ║"
+    echo "║  启动 NapCat:   bash deploy.sh napcat        ║"
+    echo "║  后台 NapCat:   bash deploy.sh napcat-bg     ║"
+    echo "║  指定QQ后台:    bash deploy.sh napcat-bg-qq QQ号 ║"
+    echo "╠══════════════════════════════════════════════╣${NC}"
+    if [ -n "$IP" ]; then
+        echo -e "${GREEN}${BOLD}║  MaiBot WebUI:  http://${IP}:8001${NC}"
+    else
+        echo -e "${GREEN}${BOLD}║  MaiBot WebUI:  http://手机IP:8001           ║"
+    fi
+    echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════════╣"
+    echo "║  下一步:                                     ║"
+    echo "║  1. bash deploy.sh start  配置 API Key      ║"
+    echo "║  2. bash deploy.sh napcat 扫码登录 QQ       ║"
+    echo "║  3. 在 WebUI 插件市场装 NapCat 适配器        ║"
+    echo "╚══════════════════════════════════════════════╝${NC}"
+}
+
 show_help() {
     echo ""
-    echo -e "${CYAN}${BOLD}MaiBot + NapCat 全自动部署脚本${NC}"
+    echo -e "${CYAN}${BOLD}MaiBot + NapCat 全自动部署脚本 (修正版)${NC}"
     echo ""
     echo "用法: bash deploy.sh [命令]"
     echo ""
-    echo -e "${BOLD}命令:${NC}"
-    echo "  auto       全自动部署（推荐，一条命令搞定）"
-    echo "  install    仅安装环境 (阶段 1+2+3，不含配置)"
-    echo "  config     仅配置 (首次启动 + 局域网访问)"
-    echo "  start      启动 MaiBot"
-    echo "  napcat     启动 NapCat (前台)"
-    echo "  napcat-bg  后台启动 NapCat"
-    echo "  status     查看环境状态"
-    echo "  update     更新 MaiBot 到最新版"
-    echo "  clean      清除所有环境 (不可逆)"
-    echo "  help       显示此帮助"
+    echo -e "${BOLD}部署命令:${NC}"
+    echo "  auto         全自动部署（推荐）"
+    echo "  install      仅安装环境 (阶段 1+2+3，不含配置)"
+    echo "  config       仅配置 (首次启动 + 局域网访问)"
     echo ""
-    echo -e "${BOLD}推荐用法:${NC}"
-    echo "  bash deploy.sh auto    # 全自动，坐着等就行"
+    echo -e "${BOLD}运行命令:${NC}"
+    echo "  start        启动 MaiBot (前台)"
+    echo "  napcat       启动 NapCat (前台)"
+    echo "  napcat-bg    后台启动 NapCat"
+    echo "  napcat-bg-qq QQ号   后台启动 NapCat 并快速登录指定 QQ"
+    echo "  napcat-login 进入 NapCat 容器内部"
+    echo ""
+    echo -e "${BOLD}管理命令:${NC}"
+    echo "  status       查看环境状态"
+    echo "  update       更新 MaiBot"
+    echo "  clean        清除所有环境 (不可逆)"
+    echo "  help         显示此帮助"
+    echo ""
+    echo -e "${BOLD}示例:${NC}"
+    echo "  bash deploy.sh auto"
+    echo "  bash deploy.sh start"
+    echo "  bash deploy.sh napcat-bg-qq 123456789"
     echo ""
 }
 
@@ -303,16 +338,18 @@ show_help() {
 # 入口
 # ============================================
 case "${1:-help}" in
-    auto)       cmd_auto ;;
-    install)    phase1_termux && phase2_napcat && phase3_maibot && info "安装完成，运行 bash deploy.sh config 继续" ;;
-    config)     phase4_config ;;
-    start)      cmd_start ;;
-    napcat)     cmd_napcat ;;
-    napcat-bg)  cmd_napcat_bg ;;
-    clean)      cmd_clean ;;
-    status)     cmd_status ;;
-    update)     cmd_update ;;
-    help)       show_help ;;
+    auto)            cmd_auto ;;
+    install)         phase1_termux && phase2_napcat && phase3_maibot && info "安装完成，运行 bash deploy.sh config 继续" ;;
+    config)          phase4_config ;;
+    start)           cmd_start ;;
+    napcat)          cmd_napcat ;;
+    napcat-bg)       cmd_napcat_bg ;;
+    napcat-bg-qq)    cmd_napcat_bg_qq "$2" ;;
+    napcat-login)    cmd_napcat_login ;;
+    clean)           cmd_clean ;;
+    status)          cmd_status ;;
+    update)          cmd_update ;;
+    help)            show_help ;;
     *)
         echo -e "${RED}[ERROR]${NC} 未知命令: $1"
         echo "运行 bash deploy.sh help 查看帮助"
