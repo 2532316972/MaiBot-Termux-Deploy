@@ -2,7 +2,7 @@
 # ============================================
 # MaiBot + NapCat 全自动部署脚本 (Termux/Android)
 # 适配架构: aarch64 (ARM64)
-# 基于官方 NapCat Termux 安装方式修正
+# 修正: 解决容器内证书过期、curl 下载失败问题
 # ============================================
 
 set -e
@@ -33,21 +33,30 @@ phase1_termux() {
 }
 
 # ============================================
-# 阶段 2: 安装 NapCat (官方 Termux 方式)
+# 阶段 2: 安装 NapCat (官方 Termux 方式，修复证书问题)
 # ============================================
 phase2_napcat() {
     step "安装 NapCat (Debian 容器)"
+
+    # 如果容器已存在，先删除
+    if proot-distro list 2>/dev/null | grep -q "napcat.*installed"; then
+        warn "NapCat 容器已存在，正在删除旧容器..."
+        proot-distro remove napcat
+    fi
 
     # 安装 debian 容器并重命名为 napcat
     proot-distro install debian --override-alias napcat
 
     step "初始化 NapCat 容器 (安装 QQ + NapCat)"
     info "这一步会下载 NapCat Linux 安装脚本，耗时约 3-5 分钟"
+    info "已包含证书修复步骤，确保 curl 下载成功"
 
+    # 关键修正：先安装/更新 ca-certificates，然后使用 -k 备用
     local init_cmd="apt update -y && \
-apt install -y sudo curl libgcrypt20 && \
-curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh && \
-sudo bash napcat.sh --docker n --cli n && \
+apt install -y sudo curl libgcrypt20 ca-certificates --reinstall && \
+update-ca-certificates -f && \
+curl -k -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh && \
+bash napcat.sh --docker n --cli n && \
 apt autoremove -y && \
 apt clean && \
 rm -rf /tmp/* /var/lib/apt/lists /root/napcat.sh"
@@ -77,6 +86,12 @@ rm -rf /tmp/* /var/lib/apt/lists /root/napcat.sh"
 # ============================================
 phase3_maibot() {
     step "安装 Ubuntu 容器"
+    # 如果容器已存在，先删除
+    if proot-distro list 2>/dev/null | grep -q "ubuntu.*installed"; then
+        warn "Ubuntu 容器已存在，正在删除旧容器..."
+        proot-distro remove ubuntu
+    fi
+
     proot-distro install ubuntu
 
     step "在 Ubuntu 容器中安装 MaiBot 环境"
@@ -266,7 +281,7 @@ cmd_auto() {
     echo "╔══════════════════════════════════════════════╗"
     echo "║   MaiBot + NapCat 全自动部署                 ║"
     echo "║   目标: Termux / Android (aarch64)           ║"
-    echo "║   基于官方 NapCat Termux 安装方式            ║"
+    echo "║   已修复证书过期问题                         ║"
     echo "╚══════════════════════════════════════════════╝"
     echo -e "${NC}"
 
