@@ -16,7 +16,7 @@ NC='\033[0m'
 
 info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+error() { echo -e "${RED}[ERROR]${NC}" "$1"; exit 1; }
 step()  { echo -e "\n${CYAN}${BOLD}=====> $1${NC}"; }
 
 # ============================================
@@ -233,30 +233,30 @@ cmd_status() {
     if [ -n "$IP" ]; then
         echo ""
         echo -e "  手机 IP:  ${GREEN}$IP${NC}"
+        echo -e "  WebUI:    ${GREEN}http://$IP:8001${NC}"
+    fi
+    echo ""
+}
 
-
-
-
-
-
+cmd_update() {
     step "更新 MaiBot 到最新版"
-
-
+    proot-distro login ubuntu -- bash -c '
+source ~/miniforge3/bin/activate maibot
 cd ~/MaiBot
+git pull
+grep -v playwright requirements.txt > /tmp/req.txt
+pip install -q -r /tmp/req.txt
+echo "=== UPDATE DONE ==="
+'
+}
 
-
-
-
-
-
-
-
-
+show_help() {
+    echo ""
     echo -e "${CYAN}${BOLD}MaiBot + NapCat 全自动部署脚本${NC}"
-
+    echo ""
     echo "用法: bash deploy.sh [命令]"
-
-
+    echo ""
+    echo -e "${BOLD}命令:${NC}"
     echo "  auto      全自动部署（推荐，一条命令搞定）"
     echo "  install   仅安装环境 (阶段 1+2，不含配置)"
     echo "  config    仅配置 (首次启动 + 局域网访问)"
@@ -264,28 +264,30 @@ cd ~/MaiBot
     echo "  napcat    启动 NapCat"
     echo "  status    查看环境状态"
     echo "  update    更新 MaiBot 到最新版"
-
+    echo "  clean     清除所有环境 (不可逆)"
     echo "  help      显示此帮助"
-
+    echo ""
     echo -e "${BOLD}推荐用法:${NC}"
     echo "  bash deploy.sh auto    # 全自动，坐着等就行"
+    echo ""
+}
 
-
-
-
-
-
-
-
+# ============================================
+# 入口
+# ============================================
+case "${1:-help}" in
+    auto)    cmd_auto ;;
     install) phase1_termux && phase2_maibot && info "安装完成，运行 bash deploy.sh config 继续" ;;
-
-
-
-
-
-
-
-
-        error "未知命令: $1\n运行 bash deploy.sh help 查看帮助"
-
-
+    config)  phase3_config ;;
+    start)   cmd_start ;;
+    napcat)  cmd_napcat ;;
+    clean)   cmd_clean ;;
+    status)  cmd_status ;;
+    update)  cmd_update ;;
+    help)    show_help ;;
+    *)
+        echo -e "${RED}[ERROR]${NC} 未知命令: $1"
+        echo "运行 bash deploy.sh help 查看帮助"
+        exit 1
+        ;;
+esac
