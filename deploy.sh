@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================
 # MaiBot + NapCat 全自动部署脚本 (Termux/Android)
-# 直接复用官方 NapCat Termux 脚本，保证可靠性
+# NapCat 部分直接使用官方 Termux 一键脚本
 # ============================================
 
 set -e
@@ -19,40 +19,22 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 step()  { echo -e "\n${CYAN}${BOLD}=====> $1${NC}"; }
 
 # ============================================
-# 官方 NapCat Termux 安装脚本 (原样复制)
+# 1. 安装 NapCat（官方 Termux 一键脚本）
 # ============================================
 install_napcat() {
     step "安装 NapCat (官方 Termux 脚本)"
-
-    # 准备 proot-distro 环境
-    apt update -y && apt install -y proot-distro screen || {
-        pkg update -y && pkg install -y proot-distro screen
-    }
-
-    # 安装 napcat 容器
-    proot-distro install debian --override-alias napcat
-
-    # 初始化容器 (完全照搬官方)
-    init_cmd="apt update -y && \
-apt install -y sudo curl libgcrypt20 && \
-curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh && \
-sudo bash napcat.sh --docker n --cli n && \
-apt autoremove -y && \
-apt clean && \
-rm -rf /tmp/* /var/lib/apt/lists"
-
-    proot-distro sh napcat -- bash -c "$init_cmd" || {
-        proot-distro remove napcat
-        error "NapCat 容器初始化失败"
-    }
-
-    info "NapCat 安装成功"
+    info "下载并执行 install.termux.sh ..."
+    curl -k -o napcat.termux.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.termux.sh && bash napcat.termux.sh
+    if [ $? -ne 0 ]; then
+        error "NapCat 安装失败"
+    fi
+    info "NapCat 安装完成"
     echo -e "${GREEN}启动命令: proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"${NC}"
     echo -e "${GREEN}后台启动: screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"'${NC}"
 }
 
 # ============================================
-# 安装 MaiBot (Ubuntu 容器 + conda)
+# 2. 安装 MaiBot (Ubuntu 容器 + conda)
 # ============================================
 install_maibot() {
     step "安装 Ubuntu 容器"
@@ -83,7 +65,7 @@ grep -v playwright requirements.txt > /tmp/req.txt
 }
 
 # ============================================
-# 配置 MaiBot (首次启动 + 局域网访问)
+# 3. 配置 MaiBot (首次启动 + 局域网访问)
 # ============================================
 configure_maibot() {
     step "首次启动 MaiBot 生成配置 (自动确认 EULA)"
@@ -112,7 +94,7 @@ fi
 }
 
 # ============================================
-# 状态查看
+# 4. 辅助命令
 # ============================================
 show_status() {
     echo ""
@@ -128,9 +110,6 @@ show_status() {
     echo ""
 }
 
-# ============================================
-# 启动命令
-# ============================================
 start_maibot() {
     proot-distro login ubuntu -- bash -c 'source ~/miniforge3/bin/activate maibot && cd ~/MaiBot && python bot.py'
 }
@@ -147,17 +126,17 @@ clean_all() {
     [ "$confirm" != "YES" ] && exit 0
     proot-distro remove ubuntu 2>/dev/null || true
     proot-distro remove napcat 2>/dev/null || true
-    rm -rf ~/miniforge3 ~/MaiBot
+    rm -rf ~/miniforge3 ~/MaiBot ~/napcat.termux.sh
     info "清理完成"
 }
 
 # ============================================
-# 一键部署
+# 5. 一键部署
 # ============================================
 auto_deploy() {
     echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗"
     echo "║   MaiBot + NapCat 全自动部署         ║"
-    echo "║   基于官方 NapCat Termux 脚本        ║"
+    echo "║   NapCat 使用官方 Termux 脚本        ║"
     echo "╚════════════════════════════════════════╝${NC}"
     warn "全程约 30-60 分钟，请保持 Termux 前台"
     read -p "按回车开始..."
@@ -180,7 +159,7 @@ auto_deploy() {
 }
 
 # ============================================
-# 帮助
+# 6. 帮助
 # ============================================
 show_help() {
     cat <<EOF
