@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # ============================================
-# MaiBot + NapCat 全自动部署脚本 (最终修复版)
-# 解决：容器内证书过期导致的 SSL 错误
-# 所有下载均使用 curl -k 或 wget --no-check-certificate
+# MaiBot + NapCat 全自动部署脚本 (最终版)
+# 解决：强制 NapCat 安装脚本内所有 curl/wget 忽略 SSL 证书
 # ============================================
 
 set -e
@@ -20,10 +19,10 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 step()  { echo -e "\n${CYAN}${BOLD}=====> $1${NC}"; }
 
 # ------------------------------------------------------------
-# 1. 安装 NapCat（手动方式，绕过官方脚本的 SSL 问题）
+# 1. 安装 NapCat（强制所有 curl/wget 忽略证书）
 # ------------------------------------------------------------
 install_napcat() {
-    step "安装 NapCat (手动修复 SSL)"
+    step "安装 NapCat (全局禁用 SSL 验证)"
 
     # 删除旧容器
     proot-distro list 2>/dev/null | grep -q napcat && proot-distro remove napcat
@@ -31,40 +30,26 @@ install_napcat() {
     # 创建 Debian 容器
     proot-distro install debian --override-alias napcat
 
-    # 初始化容器：更新证书 + 手动下载 QQ + 安装 NapCat
-    step "初始化 NapCat 容器 (更新证书, 手动安装)"
+    # 初始化脚本：更新证书 + 下载官方脚本 + 替换命令 + 执行
     local init_script="
-# 1. 基础更新和证书修复
 apt update -y
 apt install -y sudo curl wget xvfb screen
 apt install --reinstall ca-certificates -y
 update-ca-certificates -f
 
-# 2. 下载 LinuxQQ (使用 wget 忽略证书检查，带重试)
-echo '==> 下载 LinuxQQ arm64.deb'
-for url in 'https://dldir1.qq.com/qqfile/qq/QQNT/7516007c/linuxqq_3.2.25-45758_arm64.deb' \
-           'https://dldir1.qq.com/qqfile/qq/QQNT/005d58b8/linuxqq_3.2.13-25919_arm64.deb'; do
-    wget --no-check-certificate -O /tmp/qq.deb \"\$url\" && break
-    echo '下载失败，尝试下一个链接...'
-done
-if [ ! -f /tmp/qq.deb ]; then
-    echo '错误：所有 QQ 下载链接均失败'
-    exit 1
-fi
+# 下载官方安装脚本
+curl -k -o /tmp/install.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh
 
-# 3. 安装 QQ
-dpkg -i /tmp/qq.deb || apt --fix-broken install -y
+# 关键修复：将脚本内所有的 curl 替换为 curl -k，所有的 wget 替换为 wget --no-check-certificate
+sed -i 's/curl /curl -k /g' /tmp/install.sh
+sed -i 's/wget /wget --no-check-certificate /g' /tmp/install.sh
 
-# 4. 下载并运行 NapCat 安装脚本 (使用 curl -k)
-echo '==> 安装 NapCat'
-curl -k -o /tmp/napcat_install.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh
-bash /tmp/napcat_install.sh --docker n --cli n
+# 执行修改后的安装脚本
+bash /tmp/install.sh --docker n --cli n
 
-# 5. 清理
+# 清理
 apt autoremove -y && apt clean
 rm -rf /tmp/*
-
-echo 'NapCat 安装完成'
 "
 
     proot-distro sh napcat -- bash -c "$init_script"
@@ -79,7 +64,7 @@ echo 'NapCat 安装完成'
 }
 
 # ------------------------------------------------------------
-# 2. 安装 MaiBot (不变)
+# 2. 安装 MaiBot (与之前相同，无改动)
 # ------------------------------------------------------------
 install_maibot() {
     step "安装 Ubuntu 容器"
@@ -110,7 +95,7 @@ grep -v playwright requirements.txt > /tmp/req.txt
 }
 
 # ------------------------------------------------------------
-# 3. 配置 MaiBot
+# 3. 配置 MaiBot (首次启动 + 局域网访问)
 # ------------------------------------------------------------
 configure_maibot() {
     step "首次启动 MaiBot 生成配置 (自动确认 EULA)"
@@ -181,7 +166,7 @@ clean_all() {
 auto_deploy() {
     echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗"
     echo "║   MaiBot + NapCat 全自动部署         ║"
-    echo "║   手动修复 SSL 证书问题               ║"
+    echo "║   全局强制 curl/wget 忽略 SSL        ║"
     echo "╚════════════════════════════════════════╝${NC}"
     warn "全程约 30-60 分钟，请保持 Termux 前台"
     read -p "按回车开始..."
