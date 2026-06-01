@@ -1,223 +1,218 @@
-#!/usr/bin/env bash
-# ============================================
-# MaiBot + NapCat 全自动部署脚本 (最终版)
-# 解决：强制 NapCat 安装脚本内所有 curl/wget 忽略 SSL 证书
-# ============================================
+#!/bin/bash
+# MaiBot Termux / Android One-Click Installer
+# 官方依赖，无镜像源，适用于已配置代理的环境
+# 安装完成后：start-maibot 启动全部服务
 
 set -e
 
+# ==================== 颜色输出 ====================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-BOLD='\033[1m'
 NC='\033[0m'
 
-info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
-step()  { echo -e "\n${CYAN}${BOLD}=====> $1${NC}"; }
+step()  { echo -e "\n${CYAN}>>> $1${NC}"; }
 
-# ------------------------------------------------------------
-# 1. 安装 NapCat（强制所有 curl/wget 忽略证书）
-# ------------------------------------------------------------
-install_napcat() {
-    step "安装 NapCat (全局禁用 SSL 验证)"
+# ==================== 环境检查 ====================
+if [ -z "$TERMUX_VERSION" ] && [ ! -d "/data/data/com.termux/files" ]; then
+    error "This script must be run inside Termux!"
+fi
 
-    # 删除旧容器
-    proot-distro list 2>/dev/null | grep -q napcat && proot-distro remove napcat
+TERMUX_ROOTFS="/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs"
 
-    # 创建 Debian 容器
-    proot-distro install debian --override-alias napcat
+# ==================== Step 1: Termux 基础 ====================
+step "Step 1/5: Updating Termux and installing dependencies"
+pkg update -y && pkg upgrade -y
+pkg install -y proot-distro wget git curl
 
-    # 初始化脚本：更新证书 + 下载官方脚本 + 替换命令 + 执行
-    local init_script="
-apt update -y
-apt install -y sudo curl wget xvfb screen
-apt install --reinstall ca-certificates -y
-update-ca-certificates -f
-
-# 下载官方安装脚本
-curl -k -o /tmp/install.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh
-
-# 关键修复：将脚本内所有的 curl 替换为 curl -k，所有的 wget 替换为 wget --no-check-certificate
-sed -i 's/curl /curl -k /g' /tmp/install.sh
-sed -i 's/wget /wget --no-check-certificate /g' /tmp/install.sh
-
-# 执行修改后的安装脚本
-bash /tmp/install.sh --docker n --cli n
-
-# 清理
-apt autoremove -y && apt clean
-rm -rf /tmp/*
-"
-
-    proot-distro sh napcat -- bash -c "$init_script"
-    if [ $? -ne 0 ]; then
-        proot-distro remove napcat
-        error "NapCat 安装失败"
-    fi
-
-    info "NapCat 安装成功"
-    echo -e "${GREEN}启动 NapCat: proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"${NC}"
-    echo -e "${GREEN}后台启动: screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"'${NC}"
-}
-
-# ------------------------------------------------------------
-# 2. 安装 MaiBot (与之前相同，无改动)
-# ------------------------------------------------------------
-install_maibot() {
-    step "安装 Ubuntu 容器"
+# ==================== Step 2: Ubuntu 容器 ====================
+step "Step 2/5: Installing Ubuntu container (for MaiBot)"
+if [ ! -d "$TERMUX_ROOTFS/ubuntu" ]; then
     proot-distro install ubuntu
-
-    step "在 Ubuntu 中安装 MaiBot 环境"
-    proot-distro login ubuntu -- bash -c '
-set -e
-DEBIAN_FRONTEND=noninteractive
-apt update -qq && apt upgrade -y -qq && apt install -y -qq wget git
-
-# 安装 Miniforge
-wget -qO ~/Miniforge.sh https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh
-bash ~/Miniforge.sh -b -p ~/miniforge3
-rm ~/Miniforge.sh
-
-# 创建 conda 环境
-~/miniforge3/bin/conda create -n maibot python=3.12 -y -q
-~/miniforge3/bin/conda install -n maibot -c conda-forge faiss-cpu -y -q
-
-# 克隆 MaiBot 并安装依赖
-git clone --depth 1 https://github.com/Mai-with-u/MaiBot.git ~/MaiBot
-cd ~/MaiBot
-grep -v playwright requirements.txt > /tmp/req.txt
-~/miniforge3/envs/maibot/bin/pip install -q -r /tmp/req.txt
-'
-    info "MaiBot 环境安装完成"
-}
-
-# ------------------------------------------------------------
-# 3. 配置 MaiBot (首次启动 + 局域网访问)
-# ------------------------------------------------------------
-configure_maibot() {
-    step "首次启动 MaiBot 生成配置 (自动确认 EULA)"
-    proot-distro login ubuntu -- bash -c '
-source ~/miniforge3/bin/activate maibot
-cd ~/MaiBot
-timeout 120 bash -c "echo 同意 | python bot.py" || true
-'
-
-    step "开启 WebUI 局域网访问"
-    proot-distro login ubuntu -- bash -c '
-CONFIG=~/MaiBot/config/bot_config.toml
-if grep -q "^\[webui\]" "$CONFIG"; then
-    sed -i "/^\[webui\]/,/^\[/{s/host = \"127.0.0.1\"/host = \"0.0.0.0\"/}" "$CONFIG"
+    info "Ubuntu container installed."
 else
-    cat >> "$CONFIG" <<EOF
+    warn "Ubuntu container already exists, skipping."
+fi
 
+# ==================== Step 3: MaiBot 环境 ====================
+step "Step 3/5: Setting up MaiBot inside Ubuntu"
+
+cat > "$TERMUX_ROOTFS/ubuntu/root/setup-maibot.sh" << 'EOF'
+#!/bin/bash
+set -e
+
+cd ~
+
+# --- 基础工具 ---
+apt-get update -y
+apt-get install -y wget git curl build-essential
+
+# --- Miniforge ---
+if [ ! -d "$HOME/miniforge3" ]; then
+    echo "Downloading Miniforge..."
+    wget -q --show-progress https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh
+    bash Miniforge3-Linux-aarch64.sh -b -p "$HOME/miniforge3"
+    rm -f Miniforge3-Linux-aarch64.sh
+fi
+
+export PATH="$HOME/miniforge3/bin:$PATH"
+eval "$("$HOME/miniforge3/bin/conda" shell.bash hook)"
+
+# --- Conda 环境 ---
+conda create -n maibot python=3.12 -y || true
+conda activate maibot
+
+# --- faiss-cpu (核心依赖) ---
+conda install -c conda-forge faiss-cpu -y
+
+# --- MaiBot 主项目 ---
+if [ ! -d "$HOME/MaiBot" ]; then
+    git clone https://github.com/Mai-with-u/MaiBot.git
+fi
+cd MaiBot
+
+# --- Python 依赖 ---
+pip install --no-cache-dir \
+    aiohttp fastapi uvicorn pydantic sqlalchemy sqlmodel \
+    numpy pandas pillow matplotlib scipy jieba pypinyin \
+    openai google-genai httpx mcp msgpack \
+    python-dotenv python-multipart python-levenshtein \
+    rich structlog tomlkit watchfiles colorama \
+    certifi json-repair typing-extensions Babel
+
+# --- MaiBot 自有包 ---
+pip install maim-message==0.6.8 "maibot-plugin-sdk>=2.5.2" "maibot-dashboard>=1.3.0"
+
+# --- A_Memorix 依赖 ---
+pip install networkx nest-asyncio tenacity
+
+# --- NapCat 适配器插件 ---
+cd ~
+if [ ! -d "$HOME/MaiBot-Napcat-Adapter" ]; then
+    git clone https://github.com/Mai-with-u/MaiBot-Napcat-Adapter.git
+fi
+mkdir -p ~/MaiBot/plugins
+cp -r ~/MaiBot-Napcat-Adapter ~/MaiBot/plugins/
+
+# --- 预配置 WebUI (允许局域网访问) ---
+mkdir -p ~/MaiBot/config
+cat > ~/MaiBot/config/bot_config.toml << 'EOFCFG'
 [webui]
 enabled = true
 host = "0.0.0.0"
 port = 8001
+EOFCFG
+
+echo ""
+echo "=========================================="
+echo "  MaiBot environment setup complete"
+echo "=========================================="
 EOF
+
+chmod +x "$TERMUX_ROOTFS/ubuntu/root/setup-maibot.sh"
+proot-distro login ubuntu -- bash /root/setup-maibot.sh
+
+# ==================== Step 4: NapCat 容器 ====================
+step "Step 4/5: Installing NapCat container (for QQ protocol)"
+if [ ! -d "$TERMUX_ROOTFS/napcat" ]; then
+    curl -fsSL -o napcat.termux.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.termux.sh
+    bash napcat.termux.sh
+    rm -f napcat.termux.sh
+    info "NapCat container installed."
+else
+    warn "NapCat container already exists, skipping."
 fi
+
+# ==================== Step 5: 启动脚本 ====================
+step "Step 5/5: Creating launcher scripts"
+
+# --- 启动 MaiBot ---
+cat > "$PREFIX/bin/start-maibot" << 'EOF'
+#!/bin/bash
+echo -e "\033[36m[MaiBot Launcher]\033[0m Starting MaiBot..."
+proot-distro login ubuntu -- bash -c '
+    export PATH="$HOME/miniforge3/bin:$PATH"
+    eval "$($HOME/miniforge3/bin/conda shell.bash hook)"
+    conda activate maibot
+    cd ~/MaiBot
+    python bot.py
 '
-    info "MaiBot 配置完成"
-}
-
-# ------------------------------------------------------------
-# 辅助命令
-# ------------------------------------------------------------
-show_status() {
-    echo ""
-    echo -e "${CYAN}当前状态:${NC}"
-    proot-distro list
-    IP=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
-    if [ -n "$IP" ]; then
-        echo -e "手机 IP: ${GREEN}$IP${NC}"
-        echo -e "MaiBot WebUI: ${GREEN}http://$IP:8001${NC}"
-    else
-        warn "无法获取手机 IP，请手动输入 ifconfig 查看"
-    fi
-    echo ""
-}
-
-start_maibot() {
-    proot-distro login ubuntu -- bash -c 'source ~/miniforge3/bin/activate maibot && cd ~/MaiBot && python bot.py'
-}
-start_napcat() {
-    proot-distro sh napcat -- bash -c "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox"
-}
-start_napcat_bg() {
-    screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox"'
-    info "NapCat 已在后台运行，使用 screen -r napcat 查看"
-}
-clean_all() {
-    warn "将删除所有环境 (Ubuntu、NapCat 容器、MaiBot 文件)，不可逆！"
-    read -p "输入 YES 确认: " confirm
-    [ "$confirm" != "YES" ] && exit 0
-    proot-distro remove ubuntu 2>/dev/null || true
-    proot-distro remove napcat 2>/dev/null || true
-    rm -rf ~/miniforge3 ~/MaiBot
-    info "清理完成"
-}
-
-# ------------------------------------------------------------
-# 一键部署
-# ------------------------------------------------------------
-auto_deploy() {
-    echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗"
-    echo "║   MaiBot + NapCat 全自动部署         ║"
-    echo "║   全局强制 curl/wget 忽略 SSL        ║"
-    echo "╚════════════════════════════════════════╝${NC}"
-    warn "全程约 30-60 分钟，请保持 Termux 前台"
-    read -p "按回车开始..."
-
-    step "阶段 1/3: 安装 NapCat"
-    install_napcat
-
-    step "阶段 2/3: 安装 MaiBot"
-    install_maibot
-
-    step "阶段 3/3: 配置 MaiBot"
-    configure_maibot
-
-    echo -e "${GREEN}${BOLD}部署完成！${NC}"
-    show_status
-    echo -e "启动 MaiBot:   bash deploy.sh start"
-    echo -e "启动 NapCat:   bash deploy.sh napcat (前台)"
-    echo -e "后台 NapCat:   bash deploy.sh napcat-bg"
-    echo -e "查看状态:      bash deploy.sh status"
-}
-
-show_help() {
-    cat <<EOF
-用法: bash deploy.sh [命令]
-
-命令:
-  auto         一键全自动部署 (推荐)
-  start        启动 MaiBot
-  napcat       前台启动 NapCat
-  napcat-bg    后台启动 NapCat
-  status       查看状态
-  clean        清除所有环境
-  help         显示帮助
-
-示例:
-  bash deploy.sh auto
-  bash deploy.sh start
-  bash deploy.sh napcat-bg
 EOF
-}
+chmod +x "$PREFIX/bin/start-maibot"
 
-# ------------------------------------------------------------
-# 入口
-# ------------------------------------------------------------
-case "${1:-help}" in
-    auto)       auto_deploy ;;
-    start)      start_maibot ;;
-    napcat)     start_napcat ;;
-    napcat-bg)  start_napcat_bg ;;
-    status)     show_status ;;
-    clean)      clean_all ;;
-    help)       show_help ;;
-    *)          echo "未知命令: $1" && show_help ;;
-esac
+# --- 启动 NapCat ---
+cat > "$PREFIX/bin/start-napcat" << 'EOF'
+#!/bin/bash
+echo -e "\033[36m[NapCat Launcher]\033[0m Starting NapCat..."
+proot-distro login napcat -- napcat
+EOF
+chmod +x "$PREFIX/bin/start-napcat"
+
+# --- 一键启动两者 ---
+cat > "$PREFIX/bin/start-all" << 'EOF'
+#!/bin/bash
+echo -e "\033[36m[All Services]\033[0m Starting NapCat + MaiBot..."
+
+# 后台启动 NapCat
+echo "[1/2] Starting NapCat in background..."
+proot-distro login napcat -- napcat &
+NAPCAT_PID=$!
+sleep 3
+
+# 前台启动 MaiBot
+echo "[2/2] Starting MaiBot..."
+echo "Press Ctrl+C to stop MaiBot. NapCat will keep running in background."
+proot-distro login ubuntu -- bash -c '
+    export PATH="$HOME/miniforge3/bin:$PATH"
+    eval "$($HOME/miniforge3/bin/conda shell.bash hook)"
+    conda activate maibot
+    cd ~/MaiBot
+    python bot.py
+'
+
+# 如果 MaiBot 退出，可选：同时停止 NapCat
+# kill $NAPCAT_PID 2>/dev/null || true
+EOF
+chmod +x "$PREFIX/bin/start-all"
+
+# --- 停止脚本 ---
+cat > "$PREFIX/bin/stop-maibot" << 'EOF'
+#!/bin/bash
+echo "Stopping MaiBot and NapCat..."
+pkill -f "python bot.py" 2>/dev/null || true
+pkill -f "napcat" 2>/dev/null || true
+echo "Done."
+EOF
+chmod +x "$PREFIX/bin/stop-maibot"
+
+# ==================== 完成提示 ====================
+echo ""
+echo "=========================================="
+echo -e "  ${GREEN}Installation Complete!${NC}"
+echo "=========================================="
+echo ""
+echo -e "  ${CYAN}可用命令:${NC}"
+echo "    start-all      一键启动 NapCat + MaiBot"
+echo "    start-napcat   仅启动 NapCat (QQ协议端)"
+echo "    start-maibot   仅启动 MaiBot"
+echo "    stop-maibot    停止所有服务"
+echo ""
+echo -e "  ${YELLOW}首次使用必读:${NC}"
+echo "    1. 先运行 start-all 或 start-maibot"
+echo "    2. 首次启动会要求输入 [同意] 接受 EULA"
+echo "    3. 然后配置 LLM API Key:"
+echo "       proot-distro login ubuntu -- nano /root/MaiBot/config/model_config.toml"
+echo ""
+echo -e "  ${CYAN}局域网访问:${NC}"
+echo "    手机IP查看: ip addr show wlan0"
+echo "    电脑浏览器: http://<<手机IP>:8001"
+echo ""
+echo -e "  ${YELLOW}后台保活设置:${NC}"
+echo "    Android 设置 → 应用 → Termux → 电池 → 无限制"
+echo "    Android 设置 → 应用 → Termux → 自启动 → 允许"
+echo ""
