@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ============================================
-# MaiBot + NapCat 全自动部署脚本 (Termux/Android)
-# NapCat 部分直接使用官方 Termux 一键脚本
+# MaiBot + NapCat 全自动部署脚本 (最终修复版)
+# 解决：容器内证书过期导致的 SSL 错误
+# 所有下载均使用 curl -k 或 wget --no-check-certificate
 # ============================================
 
 set -e
@@ -18,24 +19,68 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 step()  { echo -e "\n${CYAN}${BOLD}=====> $1${NC}"; }
 
-# ============================================
-# 1. 安装 NapCat（官方 Termux 一键脚本）
-# ============================================
+# ------------------------------------------------------------
+# 1. 安装 NapCat（手动方式，绕过官方脚本的 SSL 问题）
+# ------------------------------------------------------------
 install_napcat() {
-    step "安装 NapCat (官方 Termux 脚本)"
-    info "下载并执行 install.termux.sh ..."
-    curl -k -o napcat.termux.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.termux.sh && bash napcat.termux.sh
+    step "安装 NapCat (手动修复 SSL)"
+
+    # 删除旧容器
+    proot-distro list 2>/dev/null | grep -q napcat && proot-distro remove napcat
+
+    # 创建 Debian 容器
+    proot-distro install debian --override-alias napcat
+
+    # 初始化容器：更新证书 + 手动下载 QQ + 安装 NapCat
+    step "初始化 NapCat 容器 (更新证书, 手动安装)"
+    local init_script="
+# 1. 基础更新和证书修复
+apt update -y
+apt install -y sudo curl wget xvfb screen
+apt install --reinstall ca-certificates -y
+update-ca-certificates -f
+
+# 2. 下载 LinuxQQ (使用 wget 忽略证书检查，带重试)
+echo '==> 下载 LinuxQQ arm64.deb'
+for url in 'https://dldir1.qq.com/qqfile/qq/QQNT/7516007c/linuxqq_3.2.25-45758_arm64.deb' \
+           'https://dldir1.qq.com/qqfile/qq/QQNT/005d58b8/linuxqq_3.2.13-25919_arm64.deb'; do
+    wget --no-check-certificate -O /tmp/qq.deb \"\$url\" && break
+    echo '下载失败，尝试下一个链接...'
+done
+if [ ! -f /tmp/qq.deb ]; then
+    echo '错误：所有 QQ 下载链接均失败'
+    exit 1
+fi
+
+# 3. 安装 QQ
+dpkg -i /tmp/qq.deb || apt --fix-broken install -y
+
+# 4. 下载并运行 NapCat 安装脚本 (使用 curl -k)
+echo '==> 安装 NapCat'
+curl -k -o /tmp/napcat_install.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh
+bash /tmp/napcat_install.sh --docker n --cli n
+
+# 5. 清理
+apt autoremove -y && apt clean
+rm -rf /tmp/*
+
+echo 'NapCat 安装完成'
+"
+
+    proot-distro sh napcat -- bash -c "$init_script"
     if [ $? -ne 0 ]; then
+        proot-distro remove napcat
         error "NapCat 安装失败"
     fi
-    info "NapCat 安装完成"
-    echo -e "${GREEN}启动命令: proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"${NC}"
+
+    info "NapCat 安装成功"
+    echo -e "${GREEN}启动 NapCat: proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"${NC}"
     echo -e "${GREEN}后台启动: screen -dmS napcat bash -c 'proot-distro sh napcat -- bash -c \"xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox\"'${NC}"
 }
 
-# ============================================
-# 2. 安装 MaiBot (Ubuntu 容器 + conda)
-# ============================================
+# ------------------------------------------------------------
+# 2. 安装 MaiBot (不变)
+# ------------------------------------------------------------
 install_maibot() {
     step "安装 Ubuntu 容器"
     proot-distro install ubuntu
@@ -64,9 +109,9 @@ grep -v playwright requirements.txt > /tmp/req.txt
     info "MaiBot 环境安装完成"
 }
 
-# ============================================
-# 3. 配置 MaiBot (首次启动 + 局域网访问)
-# ============================================
+# ------------------------------------------------------------
+# 3. 配置 MaiBot
+# ------------------------------------------------------------
 configure_maibot() {
     step "首次启动 MaiBot 生成配置 (自动确认 EULA)"
     proot-distro login ubuntu -- bash -c '
@@ -93,9 +138,9 @@ fi
     info "MaiBot 配置完成"
 }
 
-# ============================================
-# 4. 辅助命令
-# ============================================
+# ------------------------------------------------------------
+# 辅助命令
+# ------------------------------------------------------------
 show_status() {
     echo ""
     echo -e "${CYAN}当前状态:${NC}"
@@ -126,17 +171,17 @@ clean_all() {
     [ "$confirm" != "YES" ] && exit 0
     proot-distro remove ubuntu 2>/dev/null || true
     proot-distro remove napcat 2>/dev/null || true
-    rm -rf ~/miniforge3 ~/MaiBot ~/napcat.termux.sh
+    rm -rf ~/miniforge3 ~/MaiBot
     info "清理完成"
 }
 
-# ============================================
-# 5. 一键部署
-# ============================================
+# ------------------------------------------------------------
+# 一键部署
+# ------------------------------------------------------------
 auto_deploy() {
     echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗"
     echo "║   MaiBot + NapCat 全自动部署         ║"
-    echo "║   NapCat 使用官方 Termux 脚本        ║"
+    echo "║   手动修复 SSL 证书问题               ║"
     echo "╚════════════════════════════════════════╝${NC}"
     warn "全程约 30-60 分钟，请保持 Termux 前台"
     read -p "按回车开始..."
@@ -158,9 +203,6 @@ auto_deploy() {
     echo -e "查看状态:      bash deploy.sh status"
 }
 
-# ============================================
-# 6. 帮助
-# ============================================
 show_help() {
     cat <<EOF
 用法: bash deploy.sh [命令]
@@ -181,9 +223,9 @@ show_help() {
 EOF
 }
 
-# ============================================
+# ------------------------------------------------------------
 # 入口
-# ============================================
+# ------------------------------------------------------------
 case "${1:-help}" in
     auto)       auto_deploy ;;
     start)      start_maibot ;;
